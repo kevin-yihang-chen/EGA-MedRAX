@@ -14,15 +14,27 @@ Outputs JSON-serialised (graph, labels) pairs that the trainer loads.
 
 The script is intentionally streaming and forgiving so it can be re-run
 on partially failing examples.
+
+CLI
+---
+The module is runnable as ``python -m train.pseudo_label``. Provide a
+JSONL file of samples (one ``{"question", "image_path", "answer", ...}``
+per line) and an output directory. The tool registry is constructed by
+the helper named after ``--tool_loader``; the default ``mock`` uses
+``examples.mock_tools`` so users can dry-run the pipeline. Real runs pass
+``--tool_loader medrax`` to use ``main.build_agent``'s MedRAX factories.
 """
 
 from __future__ import annotations
 
+import argparse
+import importlib
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ega_medrax.claim_decomposer import BaseClaimDecomposer, RuleClaimDecomposer
 from ega_medrax.evidence import EvidenceCollector, EvidenceNormalizer, ToolReliabilityPrior
@@ -169,3 +181,133 @@ def _label_conflict(graph: EvidenceGraph) -> Dict[str, int]:
         c = any(e.proposition == Proposition.CONTRADICTS for e in graph.evidence_for(cid))
         labels[cid] = 1 if (s and c) else 0
     return labels
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _iter_jsonl(path: str) -> Iterable[Dict[str, Any]]:
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def _load_tools_mock(case: str) -> Dict[str, Any]:
+    """Tool loader for dry-runs - uses examples/mock_tools.py."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from examples.mock_tools import build_mock_tools  # type: ignore
+    return build_mock_tools(case)
+
+
+def _load_tools_factory(spec: str) -> Dict[str, Any]:
+    """Resolve ``module:function`` and call it with no arguments.
+
+    Used to inject a real MedRAX tool registry without baking a hard
+    dependency into this module. Example:
+        --tool_loader my_pkg.tool_factories:build_tools
+    """
+    if ":" not in spec:
+        raise ValueError(f"--tool_loader expects 'module:function', got {spec!r}")
+    module_name, fn_name = spec.split(":", 1)
+    module = importlib.import_module(module_name)
+    fn: Callable[[], Dict[str, Any]] = getattr(module, fn_name)
+    return fn()
+
+
+def _resolve_decomposer(name: str, llm: Optional[Any]) -> BaseClaimDecomposer:
+    if name == "rule":
+        return RuleClaimDecomposer()
+    if name == "llm":
+        from ega_medrax.claim_decomposer import LLMClaimDecomposer
+        if llm is None:
+            raise ValueError("--decomposer llm requires --llm_model")
+        return LLMClaimDecomposer(llm)
+    raise ValueError(f"unknown decomposer: {name}")
+
+
+def _build_llm(model: str) -> Any:
+    import os
+    from langchain_openai import ChatOpenAI
+    kwargs: Dict[str, Any] = {}
+    if api_key := os.getenv("OPENAI_API_KEY"):
+        kwargs["api_key"] = api_key
+    if base_url := os.getenv("OPENAI_BASE_URL"):
+        kwargs["base_url"] = base_url
+    return ChatOpenAI(model=model, temperature=0.0, **kwargs)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Build a weakly supervised EGA graph dataset.",
+    )
+    parser.add_argument(
+        "--in", dest="input", required=True,
+        help="JSONL file of {question, image_path, answer, [answerable]} samples.",
+    )
+    parser.add_argument(
+        "--out", dest="output", required=True,
+        help="Output directory for per-sample JSON pseudo-examples.",
+    )
+    parser.add_argument(
+        "--tool_loader", default="mock",
+        help=(
+            "Either 'mock' (uses examples/mock_tools.py) or a 'module:function' "
+            "spec that returns the tool registry dict."
+        ),
+    )
+    parser.add_argument(
+        "--mock_case", default="left_effusion",
+        help="Case key for the mock loader when --tool_loader=mock.",
+    )
+    parser.add_argument(
+        "--decomposer", choices=["rule", "llm"], default="rule",
+        help="Claim decomposer: 'rule' (offline) or 'llm' (requires --llm_model).",
+    )
+    parser.add_argument(
+        "--llm_model", default=None,
+        help="OpenAI-compatible model name; only used when --decomposer=llm.",
+    )
+    parser.add_argument(
+        "--skip_existing", action="store_true", default=True,
+        help="Skip samples whose output file already exists (default: True).",
+    )
+    parser.add_argument(
+        "--no_skip_existing", dest="skip_existing", action="store_false",
+        help="Re-run all samples, overwriting existing outputs.",
+    )
+    parser.add_argument("--log_level", default="INFO")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    if args.tool_loader == "mock":
+        tools = _load_tools_mock(args.mock_case)
+    else:
+        tools = _load_tools_factory(args.tool_loader)
+
+    llm = _build_llm(args.llm_model) if args.llm_model else None
+    decomposer = _resolve_decomposer(args.decomposer, llm)
+
+    samples = list(_iter_jsonl(args.input))
+    logger.info("loaded %d samples from %s", len(samples), args.input)
+
+    paths = build_pseudo_dataset(
+        samples=samples,
+        tools=tools,
+        output_dir=args.output,
+        decomposer=decomposer,
+        skip_existing=args.skip_existing,
+    )
+    logger.info("wrote %d pseudo-examples to %s", len(paths), args.output)
+
+
+if __name__ == "__main__":
+    main()
