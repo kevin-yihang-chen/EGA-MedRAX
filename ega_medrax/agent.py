@@ -42,11 +42,7 @@ from .schemas import (
     EvidenceGraph,
     VerifierOutput,
 )
-from .claim_decomposer import (
-    BaseClaimDecomposer,
-    LLMClaimDecomposer,
-    RuleClaimDecomposer,
-)
+from .claim_decomposer import BaseClaimDecomposer, RuleClaimDecomposer
 from .evidence import EvidenceCollector, EvidenceNormalizer, ToolReliabilityPrior
 from .graph import GraphBuilder, RuleViolation
 from .verifier import BaseVerifier, HybridVerifier, RuleVerifier
@@ -97,8 +93,18 @@ class EGAAgent:
     tools : dict[str, BaseTool-like]
         Same shape MedRAX uses.
     llm : Any
-        A langchain BaseLanguageModel. Used for claim decomposition and (optionally)
-        for the LLM answer head. ``None`` falls back to rule-based decomposition.
+        A langchain BaseLanguageModel. Only used by an LLM answer head if
+        you wire one in; claim decomposition is intentionally NOT routed
+        through it. See "Unified decomposition protocol" below.
+
+    Unified decomposition protocol
+    ------------------------------
+    Both training (Stage 1 pseudo-labeling in ``train/pseudo_label.py``)
+    and inference (this class) use ``RuleClaimDecomposer`` by default.
+    Mixing a rule-based decomposer at train time with an LLM decomposer
+    at test time would expose the verifier to a different claim
+    distribution than it was trained on, so until the protocols are
+    deliberately unified we hold both pinned to the rule decomposer.
     verifier, decomposer, answer_head, normalizer, collector, abstention
         Optional explicit overrides; sensible defaults are constructed if omitted.
     max_refinement_passes
@@ -132,9 +138,10 @@ class EGAAgent:
         self.normalizer = normalizer or EvidenceNormalizer(reliability=self.reliability)
         self.collector = collector or EvidenceCollector(tools=tools, normalizer=self.normalizer)
         self.graph_builder = graph_builder or GraphBuilder()
-        self.decomposer = decomposer or (
-            LLMClaimDecomposer(llm) if llm is not None else RuleClaimDecomposer()
-        )
+        # NOTE: we pin to RuleClaimDecomposer so train and inference share the
+        # same claim distribution. Pass `decomposer=LLMClaimDecomposer(llm)`
+        # explicitly if you want to opt in to LLM decomposition.
+        self.decomposer = decomposer or RuleClaimDecomposer()
         self.verifier = verifier or HybridVerifier(rule_verifier=RuleVerifier())
         self.abstention = abstention or AbstentionPolicy()
         self.answer_head = answer_head or TemplateAnswerHead()

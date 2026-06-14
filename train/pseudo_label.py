@@ -266,7 +266,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--decomposer", choices=["rule", "llm"], default="rule",
-        help="Claim decomposer: 'rule' (offline) or 'llm' (requires --llm_model).",
+        help=(
+            "Claim decomposer. Defaults to 'rule' so train and inference "
+            "share the same claim distribution; 'llm' is kept available "
+            "for when the protocol is unified end-to-end."
+        ),
     )
     parser.add_argument(
         "--llm_model", default=None,
