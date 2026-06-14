@@ -1,0 +1,17 @@
+# Core
+torch>=2.1
+numpy>=1.24
+python-dotenv>=1.0
+
+# Agent / LLM
+langchain-core>=0.2
+langchain-openai>=0.1
+langgraph>=0.0.40
+
+# Optional: learned graph verifier
+torch-geometric>=2.5
+
+# MedRAX tool stack (only needed if you wire the real MedRAX tools through main.py)
+transformers>=4.40
+torchxrayvision>=1.2
+scikit-image>=0.21

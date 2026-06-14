@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.envrc
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Build / packaging
+build/
+dist/
+
+# Runtime artifacts
+ega_logs/
+logs/
+checkpoints/
+data/ega_pseudo/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
